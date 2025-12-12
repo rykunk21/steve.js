@@ -1,0 +1,145 @@
+{
+  "events": [
+    {
+      "id": "401823362",
+      "name": "Vanderbilt Commodores at Western Kentucky Hilltoppers",
+      "shortName": "VAN @ WKU",
+      "date": "2025-11-26T17:00:00Z",
+      "status": {
+        "type": {
+          "name": "STATUS_SCHEDULED"
+        }
+      },
+      "competitions": [
+        {
+          "id": "401823362",
+          "competitors": [
+            {
+              "id": "98",
+              "homeAway": "home",
+              "team": {
+                "id": "98",
+                "displayName": "Western Kentucky Hilltoppers",
+                "abbreviation": "WKU",
+                "logo": "https://a.espncdn.com/i/teamlogos/ncaa/500/98.png",
+                "color": "F32026"
+              },
+              "score": "0"
+            },
+            {
+              "id": "238",
+              "homeAway": "away",
+              "team": {
+                "id": "238",
+                "displayName": "Vanderbilt Commodores",
+                "abbreviation": "VAN",
+                "logo": "https://a.espncdn.com/i/teamlogos/ncaa/500/238.png",
+                "color": "000000"
+              },
+              "score": "0"
+            }
+          ],
+          "venue": {
+            "fullName": "Imperial Arena"
+          },
+          "odds": [
+            {
+              "provider": {
+                "id": "58",
+                "name": "ESPN BET"
+              },
+              "details": "VAN -17.5",
+              "overUnder": 169.5,
+              "spread": 17.5,
+              "moneyline": {
+                "home": {
+                  "close": {
+                    "odds": "+1300"
+                  }
+                },
+                "away": {
+                  "close": {
+                    "odds": "-4000"
+                  }
+                }
+              },
+              "pointSpread": {
+                "home": {
+                  "close": {
+                    "line": "+17.5",
+                    "odds": "-115"
+                  }
+                },
+                "away": {
+                  "close": {
+                    "line": "-17.5",
+                    "odds": "-105"
+                  }
+                }
+              },
+              "total": {
+                "over": {
+                  "close": {
+                    "line": "o169.5",
+                    "odds": "-110"
+                  }
+                },
+                "under": {
+                  "close": {
+                    "line": "u169.5",
+                    "odds": "-110"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401234567",
+      "name": "Team A at Team B",
+      "shortName": "TEAMA @ TEAMB",
+      "date": "2025-11-26T19:00:00Z",
+      "status": {
+        "type": {
+          "name": "STATUS_SCHEDULED"
+        }
+      },
+      "competitions": [
+        {
+          "id": "401234567",
+          "competitors": [
+            {
+              "id": "123",
+              "homeAway": "home",
+              "team": {
+                "id": "123",
+                "displayName": "Team B",
+                "abbreviation": "TEAMB",
+                "logo": "https://example.com/teamb.png",
+                "color": "FF0000"
+              },
+              "score": "0"
+            },
+            {
+              "id": "456",
+              "homeAway": "away",
+              "team": {
+                "id": "456",
+                "displayName": "Team A",
+                "abbreviation": "TEAMA",
+                "logo": "https://example.com/teama.png",
+                "color": "0000FF"
+              },
+              "score": "0"
+            }
+          ],
+          "venue": {
+            "fullName": "Test Arena"
+          }
+        }
+      ]
+    }
+  ]
+}
