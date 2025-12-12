@@ -279,8 +279,10 @@ This feature involves creating a Discord bot that provides custom slash commands
 8. WHEN NN prediction loss exceeds threshold THEN the system SHALL backpropagate NN loss through VAE encoder using feedback coefficient α to improve team representations
 9. WHEN updating team representations THEN the system SHALL apply Bayesian updates to team latent distributions (μ, σ) based on observed game performance
 10. WHEN the system learns over time THEN the system SHALL decay feedback coefficient α to reduce VAE updates as NN performance stabilizes
-11. WHEN storing team data THEN the system SHALL persist updated latent distributions (μ, σ) in teams.statistical_representation field as JSON
-12. WHEN displaying predictions THEN the system SHALL indicate data source (VAE-NN system vs fallback methods) and confidence levels
+11. WHEN a new season begins THEN the system SHALL increase team uncertainty by adding inter-year variance to σ² values to account for roster changes, coaching changes, and reduced predictive value of historical performance
+12. WHEN calculating inter-year uncertainty increase THEN the system SHALL add a configurable variance increment (default 0.25) to each dimension's σ² at season start
+13. WHEN storing team data THEN the system SHALL persist updated latent distributions (μ, σ) in teams.statistical_representation field as JSON with season tracking
+14. WHEN displaying predictions THEN the system SHALL indicate data source (VAE-NN system vs fallback methods) and confidence levels
 
 ### Requirement 12
 

@@ -129,6 +129,8 @@ Historical DB → Team Stats → MCMC Sim → EV Calc → Recommendation
    - Incorporates observed game performance to refine team representations
    - Handles opponent strength in update calculations
    - Maintains uncertainty estimates that decrease with more observations
+   - Implements inter-year uncertainty increase: adds variance to σ² at season start
+   - Tracks season transitions to apply appropriate uncertainty adjustments
 
 8. **EV Calculator**
    - Converts American odds to implied probabilities
@@ -142,14 +144,15 @@ Historical DB → Team Stats → MCMC Sim → EV Calc → Recommendation
 1. Load all teams from teams table (random initialization of latent distributions)
 2. Query game_ids table for unprocessed games, ordered chronologically
 3. For each game:
-   a. Fetch XML from StatBroadcast archive
-   b. Extract normalized game features (80-dim)
-   c. Encode teams using VAE → latent distributions N(μ, σ²)
-   d. Compute actual transition probabilities from play-by-play
-   e. Train NN: predict transitions from team latents + context
-   f. If NN loss > threshold: backprop through VAE (α * NN_loss)
-   g. Bayesian update of team latent distributions
-   h. Mark game as processed
+   a. Check for season transition - if new season, increase σ² by inter-year variance
+   b. Fetch XML from StatBroadcast archive
+   c. Extract normalized game features (80-dim)
+   d. Encode teams using VAE → latent distributions N(μ, σ²)
+   e. Compute actual transition probabilities from play-by-play
+   f. Train NN: predict transitions from team latents + context
+   g. If NN loss > threshold: backprop through VAE (α * NN_loss)
+   h. Bayesian update of team latent distributions (season-aware weighting)
+   i. Mark game as processed
 4. Store trained VAE weights, NN weights, and team distributions
 ```
 
@@ -158,18 +161,19 @@ Historical DB → Team Stats → MCMC Sim → EV Calc → Recommendation
 ```
 1. Fetch today's games from ESPN API
 2. Load team latent distributions N(μ, σ²) from teams table
-3. For each game:
+3. Check for season transitions and apply inter-year variance increases if needed
+4. For each game:
    a. Sample from team distributions or use mean vectors
    b. Build game representation (team_A + team_B + context)
    c. Generate transition probabilities with NN
    d. Run MCMC simulation (10k iterations)
    e. Calculate EV for all betting markets
-   f. Generate recommendation with confidence
-4. After game completion:
+   f. Generate recommendation with confidence (higher uncertainty for new season)
+5. After game completion:
    a. Fetch actual game XML
    b. Update NN weights based on prediction error
    c. Update VAE if NN performance poor (decaying α)
-   d. Bayesian update of team distributions
+   d. Bayesian update of team distributions (season-aware weighting)
    e. Store updated models and team representations
 ```
 
@@ -185,8 +189,9 @@ CREATE TABLE teams (
     conference TEXT,                        -- Conference affiliation
     
     -- VAE latent team representation (JSON blob)
-    -- Contains: {"mu": [16-dim array], "sigma": [16-dim array], "games_processed": int}
+    -- Contains: {"mu": [16-dim array], "sigma": [16-dim array], "games_processed": int, "last_season": "2023-24"}
     -- Represents team as N(μ, σ²) distribution in 16-dimensional latent space
+    -- Inter-year uncertainty: σ² increases at season start to account for roster/coaching changes
     statistical_representation TEXT,
     
     -- Player roster for injury analysis (JSON array) - future use
@@ -310,6 +315,10 @@ CREATE TABLE model_predictions (
 *For any* game with StatBroadcast XML data containing possession count, the extracted possession count should be used instead of estimation formulas.
 **Validates: Requirements 18.9**
 
+### Property 16: Inter-year uncertainty increase
+*For any* team transitioning from one season to the next, the posterior distribution standard deviation should increase by the configured inter-year variance amount.
+**Validates: Requirements 11.11, 11.12**
+
 ## Testing Strategy
 
 ### Unit Tests
@@ -332,6 +341,14 @@ CREATE TABLE model_predictions (
 - Measure calibration and accuracy
 - Compare against market odds
 
+## Configuration Parameters
+
+### Inter-Year Uncertainty Settings
+- `INTER_YEAR_VARIANCE`: Default 0.25 - variance added to σ² at season start
+- `SEASON_START_MONTH`: Default 11 (November) - when new basketball season begins
+- `CROSS_SEASON_DECAY`: Default 0.7 - exponential decay for previous season games
+- `MIN_GAMES_FOR_STABILITY`: Default 5 - minimum games before reducing uncertainty
+
 ## Error Handling
 
 - ESPN API failures → Use cached data, fallback to basic stats
@@ -339,6 +356,7 @@ CREATE TABLE model_predictions (
 - Bayesian update failures → Log error, use prior distribution
 - MCMC simulation errors → Fall back to simpler model
 - Database errors → Log and continue with in-memory data
+- Season transition detection failures → Use conservative uncertainty increases
 
 ## Performance Considerations
 

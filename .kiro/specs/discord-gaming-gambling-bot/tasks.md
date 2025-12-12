@@ -87,7 +87,13 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Log statistics (total games found, games per team, date range)
   - _Requirements: Game tracking_
 
-- [ ] 2.5 Implement VAE-based feature extraction from game XML
+- [x] 2.5 Implement VAE-based feature extraction from game XML
+
+
+
+
+
+
   - Create script to fetch game XML from `http://archive.statbroadcast.com/<game_id>.xml`
   - Parse XML to extract comprehensive game features (80-dim): shooting stats, rebounding, assists, turnovers, advanced metrics, player-level data, lineup combinations
   - Normalize all features to [0,1] range for VAE input
@@ -96,7 +102,12 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Mark games as `processed=true` after successful extraction
   - _Requirements: VAE feature extraction, Bayesian team representations_
 
-- [ ] 2.6 Implement VAE architecture for team encoding
+- [x] 2.6 Implement VAE architecture for team encoding
+
+
+
+
+
   - Create VariationalAutoencoder class with encoder/decoder networks
   - Encoder: game_features[80] → μ[16], σ[16] (latent team distribution)
   - Decoder: z[16] → reconstructed_features[80] (for training)
@@ -104,7 +115,12 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Add methods for encoding games and sampling from team distributions
   - _Requirements: VAE team encoding, latent representations_
 
-- [ ] 2.7 Implement transition probability neural network
+- [x] 2.7 Implement transition probability neural network
+
+
+
+
+
   - Create TransitionProbabilityNN class for predicting game outcomes
   - Input: [team_A_μ[16], team_A_σ[16], team_B_μ[16], team_B_σ[16], game_context[~10]]
   - Architecture: MLP with hidden layers (128, 64, 32) → 8 transition probabilities
@@ -112,7 +128,12 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Implement cross-entropy loss calculation vs actual transition frequencies
   - _Requirements: Neural network transition prediction_
 
-- [ ] 2.8 Implement VAE-NN feedback loop mechanism
+- [x] 2.8 Implement VAE-NN feedback loop mechanism
+
+
+
+
+
   - Create VAEFeedbackTrainer class to coordinate VAE and NN training
   - Implement feedback logic: when NN cross-entropy loss > threshold, backprop through VAE
   - Add decaying feedback coefficient α that reduces over time as system stabilizes
@@ -120,15 +141,27 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Add monitoring for feedback loop stability and convergence
   - _Requirements: VAE-NN feedback loop, self-improving representations_
 
-- [ ] 2.9 Implement Bayesian team distribution updates
+- [x] 2.9 Implement Bayesian team distribution updates
+
+
+
+
+
   - Create BayesianTeamUpdater class for updating team latent distributions
   - Implement Bayesian inference: posterior = bayesian_update(prior, likelihood)
   - Update team N(μ, σ²) distributions based on observed game performance
   - Handle opponent strength considerations in update calculations
   - Maintain uncertainty estimates that decrease with more game observations
-  - _Requirements: Bayesian team updates, uncertainty quantification_
+  - Implement inter-year uncertainty increase: add configurable variance to σ² at season start
+  - Track season transitions to detect when to apply uncertainty adjustments
+  - _Requirements: Bayesian team updates, uncertainty quantification, inter-year variance_
 
-- [ ] 2.10 Implement online learning orchestrator
+- [x] 2.10 Implement online learning orchestrator
+
+
+
+
+
   - Create OnlineLearningOrchestrator to coordinate the complete training process
   - Process games chronologically from game_ids table (processed=false)
   - For each game: extract features → VAE encode → NN predict → compute loss → update models → Bayesian update teams
@@ -140,19 +173,43 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
 
 **Prerequisites**: VAE architecture, NN architecture, and feedback mechanisms implemented.
 
-- [-] 3. Train VAE-NN system on historical games
-- [ ] 3.1 Initialize team latent distributions
+- [ ] 3. Train VAE-NN system on historical games
+
+
+
+- [x] 3.1 Initialize team latent distributions
+
+
+
+
+
   - Query all teams from teams table
   - Initialize statistical_representation with random N(μ=0, σ=1) distributions for 16 dimensions
-  - Store initial distributions as JSON: {"mu": [16-array], "sigma": [16-array], "games_processed": 0}
+  - Store initial distributions as JSON: {"mu": [16-array], "sigma": [16-array], "games_processed": 0, "last_season": "2024-25"}
+  - Account for inter-year uncertainty: teams without recent games get higher initial σ values
   - Verify all teams have valid initial latent distributions
-  - Log initialization statistics (teams initialized, distribution parameters)
-  - _Requirements: Team initialization, latent space setup_
+  - Log initialization statistics (teams initialized, distribution parameters, season tracking)
+  - _Requirements: Team initialization, latent space setup, inter-year uncertainty_
 
-- [ ] 3.2 Train VAE-NN system on historical games
+- [x] 3.2 Train VAE-NN system on historical games
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   - Query unprocessed games from game_ids table ordered by game_date ASC
   - For each game chronologically:
-    - Fetch and parse XML to extract 80-dim normalized features
+    - Fetch and parse XML to extract 88-dim normalized features
     - VAE encode game features to get team latent distributions
     - NN predict transition probabilities from team latents + context
     - Compute actual transition probabilities from play-by-play
@@ -162,7 +219,12 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
     - Mark game as processed
   - _Requirements: VAE-NN training, online learning, Bayesian updates_
 
-- [ ] 3.3 Validate VAE-NN system performance
+- [x] 3.3 Validate VAE-NN system performance
+
+
+
+
+
   - Sample recent games and compare predicted vs actual transition probabilities
   - Verify team latent distributions have reasonable μ and decreasing σ over time
   - Check that VAE feedback loop is improving NN predictions
@@ -172,8 +234,15 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
 
 ## Phase 4: MCMC Integration with VAE-NN System
 
-- [ ] 4. Integrate VAE-NN system with MCMC simulation pipeline
-- [ ] 4.1 Update MCMCSimulator for VAE-NN integration
+- [-] 4. Integrate VAE-NN system with MCMC simulation pipeline
+
+
+
+
+
+- [x] 4.1 Update MCMCSimulator for VAE-NN integration
+
+
   - Modify `MCMCSimulator` to load team latent distributions from database
   - Integrate VAE-NN system for transition probability generation
   - Sample from team distributions N(μ, σ²) or use mean vectors for predictions
@@ -182,7 +251,9 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Track data source (VAE-NN vs fallback) in simulation results
   - _Requirements: MCMC integration, uncertainty handling_
 
-- [ ] 4.2 Test end-to-end MCMC with VAE-NN system
+- [x] 4.2 Test end-to-end MCMC with VAE-NN system
+
+
   - Run MCMC simulations using VAE-NN generated probabilities
   - Compare VAE-NN results vs traditional aggregate-based results
   - Verify simulation results are reasonable (win probabilities, score distributions)
@@ -190,7 +261,17 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Validate that team uncertainty affects prediction confidence appropriately
   - _Requirements: End-to-end validation, uncertainty propagation_
 
-- [ ] 4.3 Generate betting recommendations with VAE-NN
+
+
+- [x] 4.3 Generate betting recommendations with VAE-NN
+
+
+
+
+
+
+
+
   - Fetch today's NCAA basketball games from ESPN API
   - Load team latent distributions from teams.statistical_representation
   - Run MCMC simulations for each game using VAE-NN system
@@ -199,10 +280,53 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Include simulation details (iterations, confidence, data source, team uncertainty)
   - _Requirements: Betting recommendations, confidence intervals_
 
+## Phase 4.5: Inter-Year Uncertainty Management
+
+
+
+- [x] 4.5 Implement inter-year uncertainty adjustments
+
+
+
+
+- [x] 4.5.1 Create season transition detection
+
+
+  - Implement logic to detect when a new basketball season begins (typically November)
+  - Check game dates to identify season boundaries
+  - Track current season in team statistical representations
+  - Log season transitions for all teams
+  - _Requirements: Season boundary detection, temporal tracking_
+
+
+- [x] 4.5.2 Implement inter-year variance increase
+
+  - Add configurable inter-year variance parameter (default 0.25)
+  - When new season detected, increase σ² for all teams by adding inter-year variance
+  - Preserve μ values (team skill persists) but increase uncertainty (σ²)
+  - Update last_season field in statistical representation
+  - Log uncertainty adjustments (teams updated, variance added)
+  - _Requirements: Inter-year uncertainty modeling, roster change adaptation_
+
+- [x] 4.5.3 Create season-aware Bayesian updates
+
+
+  - Modify BayesianTeamUpdater to check for season transitions before each update
+  - Apply inter-year variance increase automatically when season boundary crossed
+  - Weight recent games more heavily than games from previous seasons
+  - Implement exponential decay for cross-season game influence
+  - _Requirements: Season-aware learning, temporal weighting_
+
 ## Phase 5: Continuous Online Learning
 
-- [ ] 5. Implement continuous online learning for live game updates
-- [ ] 5.1 Implement post-game update pipeline
+- [x] 5. Implement continuous online learning for live game updates
+
+
+
+
+- [x] 5.1 Implement post-game update pipeline
+
+
   - Create PostGameUpdater class to handle completed games
   - Fetch actual game XML after completion
   - Extract actual transition probabilities from play-by-play
@@ -212,7 +336,14 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Bayesian update team latent distributions based on observed performance
   - _Requirements: Online learning, continuous improvement_
 
-- [ ] 5.2 Implement model performance monitoring
+
+- [x] 5.2 Implement model performance monitoring
+
+
+
+
+
+
   - Create ModelPerformanceMonitor class to track system health
   - Monitor NN prediction accuracy over time
   - Track team distribution convergence (decreasing σ values)
@@ -221,7 +352,14 @@ Train the neural network (MLP) to predict transition matrices for basketball gam
   - Generate periodic performance reports
   - _Requirements: Model monitoring, performance tracking_
 
-- [ ] 5.3 Implement incremental game discovery
+
+- [x] 5.3 Implement incremental game discovery
+
+
+
+
+
+
   - Create script to check for new games not in game_ids table
   - Fetch new game IDs from StatBroadcast archive for all teams
   - Add new games to game_ids table with processed=false

@@ -1,17 +1,11 @@
 #!/usr/bin/env node
 
 /**
- * Discover game IDs from StatBroadcast archive
- * Fetches game IDs by directly calling the DataTables AJAX endpoint
- * 
- * Usage:
- *   node scripts/discover-game-ids.js                    # Process all teams
- *   node scripts/discover-game-ids.js --team=duke        # Process single team
+ * Discover game IDs from StatBroadcast archive - Version 3
+ * Directly calls the DataTables AJAX endpoint to get all game data
  */
 
 const axios = require('axios');
-const puppeteer = require('puppeteer');
-const qs = require('qs');
 const dbConnection = require('../src/database/connection');
 const logger = require('../src/utils/logger');
 
@@ -27,205 +21,126 @@ function parseArgs() {
 }
 
 /**
- * Capture live AJAX parameters from StatBroadcast archive page using Puppeteer
- * @param {string} gid - StatBroadcast GID (e.g., 'duke', 'msu')
- * @returns {Promise<{time: string, hash: string, body: object, headers: object}|null>}
+ * Fetch all game IDs for a team by directly calling the DataTables AJAX endpoint
  */
-async function getLiveAjaxParams(gid) {
-  let browser = null;
-  try {
-    logger.info(`Launching Puppeteer to capture AJAX params for ${gid}`);
-    
-    browser = await puppeteer.launch({ 
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    const page = await browser.newPage();
-    
-    let captured = null;
-    
-    // Intercept network requests to capture the AJAX call
-    page.on('request', req => {
-      const url = req.url();
-      if (url.includes('_archive.php')) {
-        const parsed = new URL(url);
-        captured = {
-          time: parsed.searchParams.get('time'),
-          hash: parsed.searchParams.get('hash'),
-          body: req.postData(),
-          headers: req.headers()
-        };
-        logger.debug(`Captured AJAX params: time=${captured.time}, hash=${captured.hash}`);
-      }
-    });
-    
-    // Load the archive page and wait for the AJAX request to fire
-    await page.goto(
-      `https://www.statbroadcast.com/events/archive.php?gid=${gid}`,
-      { waitUntil: 'networkidle2', timeout: 30000 }
-    );
-    
-    await browser.close();
-    browser = null;
-    
-    if (!captured || !captured.time || !captured.hash) {
-      logger.error(`Failed to capture AJAX params for ${gid}`);
-      return null;
-    }
-    
-    return captured;
-    
-  } catch (error) {
-    logger.error(`Puppeteer error for ${gid}:`, error.message);
-    if (browser) {
-      await browser.close();
-    }
-    return null;
-  }
-}
-
-/**
- * Fetch all game IDs for a team using Puppeteer to capture live AJAX parameters
- * @param {string} gid - StatBroadcast GID (e.g., 'duke', 'msu')
- * @returns {Promise<Array<{gameId: string}>>} Array of game ID objects
-**/
 async function fetchGameIdsForTeam(gid) {
   try {
     logger.info(`Fetching game IDs for team: ${gid}`);
-
-    // Step 1: Launch Puppeteer to capture the actual AJAX request
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    const page = await browser.newPage();
-
-    let capturedRequest = null;
-
-    page.on('request', req => {
-      const url = req.url();
-      if (url.includes('_archive.php') && req.method() === 'POST') {
-        capturedRequest = {
-          url,
-          body: req.postData(),
-          headers: req.headers()
-        };
-        logger.debug(`Captured AJAX request: ${url}`);
-      }
-    });
-
-    await page.goto(`https://www.statbroadcast.com/events/archive.php?gid=${gid}`, {
-      waitUntil: 'networkidle2',
-      timeout: 30000
-    });
-
-    await browser.close();
-
-    if (!capturedRequest) {
-      logger.error(`No AJAX request captured for ${gid}`);
-      return [];
-    }
-
-    const baseBody = qs.parse(capturedRequest.body);
-    logger.debug(`Captured POST body keys: ${Object.keys(baseBody).join(', ')}`);
-
-    // Step 2: Paginate through records
+    
+    // The DataTables AJAX endpoint URL
+    // We need to get the hash from the page first, or try without it
+    const baseUrl = 'https://www.statbroadcast.com/scripts/_archive.php';
+    
     const gameIds = [];
     let start = 0;
-    const length = 100;
+    const length = 100; // Fetch 100 records at a time
     let totalRecords = null;
-
+    
     while (totalRecords === null || start < totalRecords) {
-      const body = {
-        ...baseBody,
+      const params = {
         draw: 1,
-        start,
-        length,
-        gid,
-        sports: 'M;bbgame',
+        start: start,
+        length: length,
+        'columns[0][data]': 0,
+        'columns[0][name]': '',
+        'columns[0][searchable]': 'true',
+        'columns[0][orderable]': 'true',
+        'columns[0][search][value]': '',
+        'columns[0][search][regex]': 'false',
+        'columns[1][data]': 1,
+        'columns[1][name]': '',
+        'columns[1][searchable]': 'true',
+        'columns[1][orderable]': 'false',
+        'columns[1][search][value]': '',
+        'columns[1][search][regex]': 'false',
+        'columns[2][data]': 2,
+        'columns[2][name]': '',
+        'columns[2][searchable]': 'true',
+        'columns[2][orderable]': 'false',
+        'columns[2][search][value]': '',
+        'columns[2][search][regex]': 'false',
+        'columns[3][data]': 3,
+        'columns[3][name]': '',
+        'columns[3][searchable]': 'true',
+        'columns[3][orderable]': 'false',
+        'columns[3][search][value]': '',
+        'columns[3][search][regex]': 'false',
+        'order[0][column]': 0,
+        'order[0][dir]': 'desc',
+        'search[value]': '',
+        'search[regex]': 'false',
+        gid: gid,
+        conf: '',
+        tourn: '',
+        sports: 'M;bbgame', // Men's Basketball
+        startdate: '',
+        enddate: '',
+        members: '',
+        champonly: 0
       };
-
+      
       logger.debug(`Fetching records ${start} to ${start + length} for ${gid}`);
-
-      const response = await axios.post(
-        capturedRequest.url, 
-        qs.stringify(body),
-        {
-          headers: {
-            ...capturedRequest.headers,
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-          },
-          timeout: 30000
+      
+      const response = await axios.get(baseUrl, {
+        params: params,
+        timeout: 30000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': `https://www.statbroadcast.com/events/archive.php?gid=${gid}`
         }
-      );
-
+      });
+      
       const data = response.data;
-      logger.debug(`Raw response for ${gid}, offset ${start}: ${JSON.stringify(data).substring(0, 1000)}`);
-
+      
       if (!data || !data.data) {
         logger.warn(`No data returned for ${gid} at offset ${start}`);
         break;
       }
-
+      
+      // Set total records on first request
       if (totalRecords === null) {
         totalRecords = data.recordsFiltered || data.recordsTotal || 0;
         logger.info(`Total records for ${gid}: ${totalRecords}`);
       }
-
+      
+      // Extract game IDs from this batch
       data.data.forEach(row => {
-        if (row.eventlink && row.eventdate) {
-          const match = row.eventlink.match(/id=(\d+)/);
+        if (row.length >= 4) {
+          const linkHtml = row[3];
+          // Extract game ID from link HTML
+          const match = linkHtml.match(/id=(\d+)/);
           if (match) {
-            // Convert MM/DD/YYYY to YYYY-MM-DD for SQLite DATE format
-            const [month, day, year] = row.eventdate.split('/');
-            const formattedDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-            
-            gameIds.push({
-              gameId: match[1],
-              eventDate: formattedDate,
-              sport: row.sport || 'Unknown'
-            });
+            gameIds.push(match[1]);
           }
         }
       });
-
+      
+      logger.info(`Fetched ${gameIds.length}/${totalRecords} game IDs for ${gid}`);
+      
+      // Move to next batch
       start += length;
-      await new Promise(resolve => setTimeout(resolve, 1000)); // rate limit
+      
+      // Rate limiting
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
-
-    // Deduplicate by gameId
-    const uniqueGames = Array.from(
-      new Map(gameIds.map(game => [game.gameId, game])).values()
-    );
-    logger.info(`Found ${uniqueGames.length} unique games for ${gid}`);
-    return uniqueGames;
-
+    
+    const uniqueGameIds = [...new Set(gameIds)];
+    logger.info(`Found ${uniqueGameIds.length} unique games for ${gid}`);
+    
+    return uniqueGameIds.map(id => ({ gameId: id }));
+    
   } catch (error) {
     logger.error(`Failed to fetch game IDs for ${gid}:`, error.message);
-    if (error.response) {
-      logger.error(`Response status: ${error.response.status}`);
-      logger.error(`Response data: ${JSON.stringify(error.response.data).substring(0, 500)}`);
-    }
     return [];
   }
 }
 
-/**
- * Fetch game metadata from StatBroadcast XML archive
- * @param {string} gameId - Game ID
- * @returns {Promise<{homeTeam: string, awayTeam: string, gameDate: string}|null>}
- */
 async function fetchGameMetadata(gameId) {
   try {
     const url = `http://archive.statbroadcast.com/${gameId}.xml`;
-    const response = await axios.get(url, { 
-      timeout: 10000, 
-      validateStatus: (status) => status === 200 
-    });
+    const response = await axios.get(url, { timeout: 10000, validateStatus: (status) => status === 200 });
     
     const xml = response.data;
-    
-    // Parse XML to extract team names and date
     const homeMatch = xml.match(/<venue[^>]*homeid="([^"]+)"[^>]*homename="([^"]+)"/);
     const awayMatch = xml.match(/<venue[^>]*visid="([^"]+)"[^>]*visname="([^"]+)"/);
     const dateMatch = xml.match(/<venue[^>]*date="([^"]+)"/);
@@ -245,13 +160,7 @@ async function fetchGameMetadata(gameId) {
   }
 }
 
-/**
- * Find team ID by team name (fuzzy matching)
- * @param {string} teamName - Team name from XML
- * @returns {Promise<string|null>} Team ID or null
- */
 async function findTeamIdByName(teamName) {
-  // Try exact match first
   let team = await dbConnection.get(
     'SELECT team_id FROM teams WHERE LOWER(team_name) = LOWER(?)',
     [teamName]
@@ -259,7 +168,6 @@ async function findTeamIdByName(teamName) {
   
   if (team) return team.team_id;
   
-  // Try partial match
   team = await dbConnection.get(
     'SELECT team_id FROM teams WHERE LOWER(team_name) LIKE LOWER(?)',
     [`%${teamName}%`]
@@ -268,11 +176,6 @@ async function findTeamIdByName(teamName) {
   return team ? team.team_id : null;
 }
 
-/**
- * Process a single team: fetch game IDs and store in database
- * @param {Object} team - Team object with team_id, statbroadcast_gid, team_name, sport
- * @returns {Promise<{discovered: number, inserted: number, skipped: number, failed: number}>}
- */
 async function processTeam(team) {
   logger.info(`Processing team: ${team.team_name} (${team.statbroadcast_gid})`);
   
@@ -289,7 +192,6 @@ async function processTeam(team) {
   
   for (const game of games) {
     try {
-      // Check if game already exists
       const existing = await dbConnection.get(
         'SELECT game_id FROM game_ids WHERE game_id = ?',
         [game.gameId]
@@ -300,19 +202,36 @@ async function processTeam(team) {
         continue;
       }
       
-      // Use eventDate from AJAX response and placeholder team IDs
-      // We'll fetch actual team names from XML later when processing games
+      const metadata = await fetchGameMetadata(game.gameId);
+      
+      if (!metadata) {
+        logger.warn(`No metadata for game ${game.gameId}, using placeholder`);
+        await dbConnection.run(
+          `INSERT INTO game_ids (game_id, sport, home_team_id, away_team_id, game_date, processed)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+          [game.gameId, team.sport, team.team_id, team.team_id, '2024-01-01']
+        );
+        inserted++;
+        failed++;
+        continue;
+      }
+      
+      const homeTeamId = await findTeamIdByName(metadata.homeTeam) || team.team_id;
+      const awayTeamId = await findTeamIdByName(metadata.awayTeam) || team.team_id;
+      
       await dbConnection.run(
         `INSERT INTO game_ids (game_id, sport, home_team_id, away_team_id, game_date, processed)
          VALUES (?, ?, ?, ?, ?, 0)`,
-        [game.gameId, game.sport, team.team_id, team.team_id, game.eventDate]
+        [game.gameId, team.sport, homeTeamId, awayTeamId, metadata.gameDate]
       );
       
       inserted++;
       
-      if (inserted % 100 === 0) {
+      if (inserted % 25 === 0) {
         logger.info(`Progress: ${inserted}/${games.length} for ${team.team_name}`);
       }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
     } catch (error) {
       logger.error(`Failed to process game ${game.gameId}:`, error.message);
@@ -323,9 +242,6 @@ async function processTeam(team) {
   return { discovered: games.length, inserted, skipped, failed };
 }
 
-/**
- * Main function
- */
 async function main() {
   try {
     logger.info('Starting game ID discovery...');
@@ -333,7 +249,6 @@ async function main() {
     const options = parseArgs();
     await dbConnection.initialize();
     
-    // Get teams to process
     let teams;
     if (options.team) {
       const team = await dbConnection.get(
@@ -359,7 +274,6 @@ async function main() {
     let totalSkipped = 0;
     let totalFailed = 0;
     
-    // Process each team
     for (let i = 0; i < teams.length; i++) {
       const team = teams[i];
       logger.info(`[${i + 1}/${teams.length}] Processing ${team.team_name}`);
@@ -374,7 +288,6 @@ async function main() {
       logger.info(`Team ${team.team_name} complete: ${result.inserted} inserted, ${result.skipped} skipped, ${result.failed} failed`);
     }
     
-    // Print summary
     console.log('\n' + '='.repeat(60));
     console.log('Game ID Discovery Complete');
     console.log('='.repeat(60));
@@ -398,7 +311,6 @@ async function main() {
   }
 }
 
-// Run if called directly
 if (require.main === module) {
   main();
 }

@@ -1500,6 +1500,46 @@ class ESPNAPIClient {
   }
 
   /**
+   * Get today's games for a specific sport
+   * @param {string} sport - Sport key (nfl, nba, nhl, ncaa_basketball, ncaa_football)
+   * @param {Object} options - Additional options
+   * @returns {Promise<Array>} - Array of today's game objects
+   */
+  async getTodaysGames(sport, options = {}) {
+    try {
+      logger.info('Fetching today\'s games', { sport });
+      
+      // Use getUpcomingGames which already filters for today's games
+      const games = await this.getUpcomingGames(sport, options);
+      
+      // Filter to only today's games (in case API returns games from other days)
+      const today = new Date();
+      const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
+      
+      const todaysGames = games.filter(game => {
+        const gameDate = new Date(game.date);
+        return gameDate >= todayStart && gameDate < todayEnd;
+      });
+      
+      logger.info('Filtered to today\'s games', {
+        sport,
+        totalGames: games.length,
+        todaysGames: todaysGames.length
+      });
+      
+      return todaysGames;
+      
+    } catch (error) {
+      logger.error('Failed to fetch today\'s games', {
+        sport,
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Test connection to ESPN API
    * @returns {Promise<boolean>} - Whether connection is successful
    */
