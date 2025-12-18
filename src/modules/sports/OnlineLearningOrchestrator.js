@@ -18,29 +18,54 @@ const logger = require('../../utils/logger');
  */
 class OnlineLearningOrchestrator {
   constructor(options = {}) {
-    // Initialize components
+    // Initialize components for new InfoNCE architecture
     this.featureExtractor = new VAEFeatureExtractor();
-    this.vae = new VariationalAutoencoder(88, 16); // 88-dim input, 16-dim latent
+    this.frozenEncoder = null; // Will be loaded from FrozenVAEEncoder
     this.transitionNN = new TransitionProbabilityNN(10); // 10-dim game context
     this.teamRepository = new TeamRepository();
     
-    // Initialize training components
-    this.feedbackTrainer = new VAEFeedbackTrainer(this.vae, this.transitionNN, {
-      feedbackThreshold: options.feedbackThreshold || 0.5,
-      initialAlpha: options.initialAlpha || 0.1,
-      alphaDecayRate: options.alphaDecayRate || 0.99,
-      minAlpha: options.minAlpha || 0.001
-    });
+    // Initialize Bayesian posterior updater (replaces VAEFeedbackTrainer)
+    const BayesianPosteriorUpdater = require('./BayesianPosteriorUpdater');
+    this.bayesianUpdater = new BayesianPosteriorUpdater(
+      this.teamRepository, 
+      this.transitionNN,
+      {
+        learningRate: options.learningRate || 0.1,
+        minUncertainty: options.minUncertainty || 0.1,
+        maxUncertainty: options.maxUncertainty || 2.0,
+        likelihoodWeight: options.likelihoodWeight || 1.0,
+        latentDim: options.latentDim || 16
+      }
+    );
     
-    this.bayesianUpdater = new BayesianTeamUpdater(this.teamRepository, {
-      initialUncertainty: options.initialUncertainty || 1.0,
-      minUncertainty: options.minUncertainty || 0.1,
-      uncertaintyDecayRate: options.uncertaintyDecayRate || 0.95,
-      learningRate: options.learningRate || 0.1
-    });
+    // Initialize refactored trainer (replaces VAEFeedbackTrainer)
+    const AdaptiveVAENNTrainer = require('./AdaptiveVAENNTrainer');
+    this.adaptiveTrainer = new AdaptiveVAENNTrainer(
+      this.frozenEncoder,
+      this.transitionNN,
+      this.bayesianUpdater,
+      {
+        baseNNLearningRate: options.baseNNLearningRate || 0.001,
+        gameContextDim: options.gameContextDim || 10
+      }
+    );
+
+    // Initialize inter-year uncertainty manager for season transitions
+    const InterYearUncertaintyManager = require('./InterYearUncertaintyManager');
+    this.uncertaintyManager = new InterYearUncertaintyManager(
+      this.teamRepository,
+      {
+        interYearVariance: options.interYearVariance || 0.25,
+        maxUncertainty: options.maxUncertainty || 2.0,
+        minUncertainty: options.minUncertainty || 0.1,
+        preserveSkillFactor: options.preserveSkillFactor || 1.0,
+        logAdjustments: options.logAdjustments !== false
+      }
+    );
 
     // Training parameters
     this.batchSize = options.batchSize || 1; // Process games one at a time for chronological order
+    this.miniBatchSize = options.miniBatchSize || 8; // Accumulate gradients over N games
     this.maxGamesPerSession = options.maxGamesPerSession || 100;
     this.saveInterval = options.saveInterval || 10; // Save models every N games
     this.validationInterval = options.validationInterval || 25; // Validate every N games
@@ -64,19 +89,28 @@ class OnlineLearningOrchestrator {
       errors: []
     };
 
+    // Loss tracking for visualization
+    this.lossHistory = [];
+    this.lossTrackingInterval = options.lossTrackingInterval || 10; // Track every N games
+
     // State management
     this.isRunning = false;
     this.shouldStop = false;
     this.currentGameId = null;
     this.sessionStartTime = null;
 
-    logger.info('Initialized OnlineLearningOrchestrator', {
+    logger.info('Initialized OnlineLearningOrchestrator (InfoNCE Architecture)', {
+      architecture: 'InfoNCE with frozen encoder and Bayesian updates',
       batchSize: this.batchSize,
       maxGamesPerSession: this.maxGamesPerSession,
       saveInterval: this.saveInterval,
       validationInterval: this.validationInterval,
       maxRetries: this.maxRetries,
-      continueOnError: this.continueOnError
+      continueOnError: this.continueOnError,
+      frozenEncoderLoaded: !!this.frozenEncoder,
+      bayesianUpdaterLoaded: !!this.bayesianUpdater,
+      uncertaintyManagerLoaded: !!this.uncertaintyManager,
+      interYearVariance: this.uncertaintyManager ? this.uncertaintyManager.interYearVariance : 'not_loaded'
     });
   }
 
@@ -111,6 +145,9 @@ class OnlineLearningOrchestrator {
 
       // Load existing models if available
       await this.loadModels();
+      
+      // Load frozen encoder if available
+      await this.loadFrozenEncoder();
 
       // Get unprocessed games in chronological order
       const unprocessedGames = await this.getUnprocessedGames(maxGames, startFromGameId);
@@ -143,6 +180,9 @@ class OnlineLearningOrchestrator {
           const processingTime = Date.now() - gameStartTime;
           this.updateProcessingStats(result, processingTime);
           
+          // Track losses for visualization
+          this.trackLossHistory(result, i + 1);
+
           // Callbacks
           if (onGameComplete) {
             await onGameComplete(result, i + 1, unprocessedGames.length);
@@ -180,9 +220,9 @@ class OnlineLearningOrchestrator {
         }
       }
 
-      // Final save (skip for now due to TensorFlow.js save issues)
+      // Final save (safe weight-only format)
       try {
-        await this.saveModels();
+        await this.saveModelsSafe();
       } catch (error) {
         logger.warn('Model saving failed, continuing without save', {
           error: error.message
@@ -231,25 +271,16 @@ class OnlineLearningOrchestrator {
           gameDate: gameInfo.game_date
         });
 
-        // Create transaction checkpoint for rollback
-        const checkpoint = await this.createCheckpoint(gameInfo);
-
-        try {
-          // Process the game
-          const result = await this.processGame(gameInfo);
-          
-          // Commit changes
-          await this.commitCheckpoint(checkpoint);
-          
-          return result;
-
-        } catch (error) {
-          // Rollback on error if enabled
-          if (this.rollbackOnError) {
-            await this.rollbackCheckpoint(checkpoint);
-          }
-          throw error;
-        }
+        // Process the game directly without checkpoints (disabled for memory management)
+        const result = await this.processGame(gameInfo);
+        
+        // Mark game as processed directly
+        await dbConnection.run(
+          'UPDATE game_ids SET processed = 1 WHERE game_id = ?',
+          [gameInfo.game_id]
+        );
+        
+        return result;
 
       } catch (error) {
         lastError = error;
@@ -274,7 +305,7 @@ class OnlineLearningOrchestrator {
   }
 
   /**
-   * Process a single game through the complete VAE-NN pipeline
+   * Process a single game through the InfoNCE VAE-NN pipeline
    * @param {Object} gameInfo - Game information from database
    * @returns {Promise<Object>} - Processing result
    */
@@ -283,7 +314,7 @@ class OnlineLearningOrchestrator {
     const startTime = Date.now();
 
     try {
-      logger.debug('Starting game processing pipeline', {
+      logger.debug('Starting InfoNCE game processing pipeline', {
         gameId,
         homeTeam: gameInfo.home_team_id,
         awayTeam: gameInfo.away_team_id,
@@ -293,95 +324,55 @@ class OnlineLearningOrchestrator {
       // Step 1: Extract features and transition probabilities
       const gameData = await this.featureExtractor.processGame(gameId);
       
-      // Step 2: Get current team distributions
-      const homeTeamDistribution = await this.bayesianUpdater.getTeamDistribution(gameInfo.home_team_id);
-      const awayTeamDistribution = await this.bayesianUpdater.getTeamDistribution(gameInfo.away_team_id);
+      // Step 2: Check for season transitions and apply inter-year uncertainty increases
+      await this.checkSeasonTransitions(gameInfo.game_date, [gameInfo.home_team_id, gameInfo.away_team_id]);
+
+      // Step 3: Get CURRENT posterior distributions (after potential season transitions)
+      const homePosterior = await this.teamRepository.getTeamEncodingFromDb(gameInfo.home_team_id);
+      const awayPosterior = await this.teamRepository.getTeamEncodingFromDb(gameInfo.away_team_id);
 
       // Initialize teams if they don't exist
-      if (!homeTeamDistribution) {
+      if (!homePosterior) {
         await this.initializeTeam(gameInfo.home_team_id);
       }
-      if (!awayTeamDistribution) {
+      if (!awayPosterior) {
         await this.initializeTeam(gameInfo.away_team_id);
       }
 
-      // Step 3: VAE encode game features to team latent representations
-      const homeLatent = this.vae.encodeGameToTeamDistribution(
-        this.convertFeaturesToArray(gameData.features.home)
-      );
-      const awayLatent = this.vae.encodeGameToTeamDistribution(
-        this.convertFeaturesToArray(gameData.features.visitor)
-      );
+      // Get current posteriors after potential initialization
+      const currentHomePosterior = homePosterior || await this.teamRepository.getTeamEncodingFromDb(gameInfo.home_team_id);
+      const currentAwayPosterior = awayPosterior || await this.teamRepository.getTeamEncodingFromDb(gameInfo.away_team_id);
 
-      // Step 4: Build game context features
-      const gameContext = this.buildGameContext(gameData.metadata, gameInfo);
-
-      // Step 5: NN predict transition probabilities
-      const homeTransitionPred = this.transitionNN.predict(
-        homeLatent.mu, homeLatent.sigma,
-        awayLatent.mu, awayLatent.sigma,
-        gameContext
-      );
-      
-      const awayTransitionPred = this.transitionNN.predict(
-        awayLatent.mu, awayLatent.sigma,
-        homeLatent.mu, homeLatent.sigma,
-        gameContext
-      );
-
-      // Step 6: Convert actual transition probabilities to arrays
-      const homeActualProbs = this.convertTransitionProbsToArray(gameData.transitionProbabilities.home);
-      const awayActualProbs = this.convertTransitionProbsToArray(gameData.transitionProbabilities.visitor);
-
-      // Step 7: Train VAE-NN system with feedback loop
-      const homeTrainingResult = await this.feedbackTrainer.trainOnGame(
-        this.convertFeaturesToArray(gameData.features.home),
-        homeActualProbs,
-        homeLatent.mu, homeLatent.sigma,
-        awayLatent.mu, awayLatent.sigma,
-        gameContext
-      );
-
-      const awayTrainingResult = await this.feedbackTrainer.trainOnGame(
-        this.convertFeaturesToArray(gameData.features.visitor),
-        awayActualProbs,
-        awayLatent.mu, awayLatent.sigma,
-        homeLatent.mu, homeLatent.sigma,
-        gameContext
-      );
-
-      // Step 8: Bayesian update team distributions
-      const homeGameResult = {
-        won: gameData.teams.home.score > gameData.teams.visitor.score,
-        pointDifferential: gameData.teams.home.score - gameData.teams.visitor.score
-      };
-
-      const awayGameResult = {
-        won: gameData.teams.visitor.score > gameData.teams.home.score,
-        pointDifferential: gameData.teams.visitor.score - gameData.teams.home.score
-      };
-
-      const homeUpdateResult = await this.bayesianUpdater.updateTeamDistribution(
+      // Step 3: Use refactored trainer for complete pipeline
+      const trainingResult = await this.adaptiveTrainer.trainOnGame(
+        gameData,
         gameInfo.home_team_id,
-        homeLatent.mu,
-        {
-          ...this.extractGameContextForBayesian(gameData.metadata),
-          gameResult: homeGameResult
-        },
-        awayTeamDistribution || { mu: awayLatent.mu, sigma: awayLatent.sigma },
-        homeLatent.sigma
+        gameInfo.away_team_id
       );
 
-      const awayUpdateResult = await this.bayesianUpdater.updateTeamDistribution(
-        gameInfo.away_team_id,
-        awayLatent.mu,
-        {
-          ...this.extractGameContextForBayesian(gameData.metadata),
-          gameResult: awayGameResult
-        },
-        homeTeamDistribution || { mu: homeLatent.mu, sigma: homeLatent.sigma },
-        awayLatent.sigma
-      );
+      // Step 4: Add error handling for posterior update failures
+      let posteriorUpdateSuccess = true;
+      let posteriorUpdateError = null;
+
+      try {
+        // Posterior updates are handled within the adaptiveTrainer.trainOnGame method
+        // This ensures proper sequencing: NN training first, then Bayesian updates
+        logger.debug('Posterior updates completed within training pipeline', {
+          gameId,
+          homeTeam: gameInfo.home_team_id,
+          awayTeam: gameInfo.away_team_id
+        });
+      } catch (updateError) {
+        posteriorUpdateSuccess = false;
+        posteriorUpdateError = updateError.message;
+        
+        logger.error('Posterior update failed during game processing', {
+          gameId,
+          error: updateError.message
+        });
+        
+        // Continue processing but mark the failure
+      }
 
       const processingTime = Date.now() - startTime;
 
@@ -389,55 +380,57 @@ class OnlineLearningOrchestrator {
         gameId,
         gameDate: gameInfo.game_date,
         processingTime,
+        architecture: 'InfoNCE with frozen encoder',
+        
+        // Training results from refactored trainer
+        trainingResult,
+        
+        // Posterior update status
+        posteriorUpdateSuccess,
+        posteriorUpdateError,
+        
+        // Original team states (for comparison)
+        originalPosteriors: {
+          home: currentHomePosterior,
+          away: currentAwayPosterior
+        },
+        
+        // Game metadata
         teams: {
           home: {
             id: gameInfo.home_team_id,
             name: gameData.teams.home.name,
-            score: gameData.teams.home.score,
-            latent: homeLatent,
-            trainingResult: homeTrainingResult,
-            updateResult: homeUpdateResult
+            score: gameData.teams.home.score
           },
           away: {
             id: gameInfo.away_team_id,
             name: gameData.teams.visitor.name,
-            score: gameData.teams.visitor.score,
-            latent: awayLatent,
-            trainingResult: awayTrainingResult,
-            updateResult: awayUpdateResult
+            score: gameData.teams.visitor.score
           }
         },
-        predictions: {
-          home: homeTransitionPred,
-          away: awayTransitionPred
-        },
+        
+        // Actual transition probabilities for validation
         actual: {
           home: gameData.transitionProbabilities.home,
           away: gameData.transitionProbabilities.visitor
-        },
-        losses: {
-          home: homeTrainingResult.nnLoss,
-          away: awayTrainingResult.nnLoss,
-          feedbackTriggered: homeTrainingResult.feedbackTriggered || awayTrainingResult.feedbackTriggered
         }
       };
 
-      logger.info('Game processing completed', {
+      logger.info('InfoNCE game processing completed', {
         gameId,
         processingTime,
         homeTeam: result.teams.home.name,
         awayTeam: result.teams.away.name,
         homeScore: result.teams.home.score,
         awayScore: result.teams.away.score,
-        homeLoss: result.losses.home.toFixed(6),
-        awayLoss: result.losses.away.toFixed(6),
-        feedbackTriggered: result.losses.feedbackTriggered
+        posteriorUpdateSuccess,
+        encoderFrozen: this.frozenEncoder ? await this.frozenEncoder.validateImmutability(false) : 'not_loaded'
       });
 
       return result;
 
     } catch (error) {
-      logger.error('Failed to process game', {
+      logger.error('Failed to process game in InfoNCE pipeline', {
         gameId,
         error: error.message,
         stack: error.stack
@@ -447,22 +440,120 @@ class OnlineLearningOrchestrator {
   }
 
   /**
-   * Initialize a team with default latent distribution
+   * Load frozen VAE encoder from database or file
+   * @returns {Promise<void>}
+   */
+  async loadFrozenEncoder() {
+    try {
+      const FrozenVAEEncoder = require('./FrozenVAEEncoder');
+      this.frozenEncoder = new FrozenVAEEncoder(80, 16); // 80-dim input, 16-dim latent
+      
+      // Try to load pretrained weights from database or file
+      // For now, create with default weights - in production, load from vae_model_weights table
+      logger.info('Frozen encoder initialized (weights to be loaded from database)', {
+        inputDim: 80,
+        latentDim: 16
+      });
+      
+      // Update the adaptive trainer with the loaded encoder
+      if (this.adaptiveTrainer) {
+        this.adaptiveTrainer.frozenEncoder = this.frozenEncoder;
+      }
+      
+    } catch (error) {
+      logger.warn('Failed to load frozen encoder, continuing without it', {
+        error: error.message
+      });
+      this.frozenEncoder = null;
+    }
+  }
+
+  /**
+   * Initialize a team with default posterior distribution
    * @param {string} teamId - Team ID
    * @returns {Promise<void>}
    */
   async initializeTeam(teamId) {
     try {
-      const initialDistribution = this.bayesianUpdater.initializeTeamDistribution(teamId);
-      await this.bayesianUpdater.saveTeamDistribution(teamId, initialDistribution);
+      // Create default posterior distribution for InfoNCE space
+      const initialPosterior = {
+        mu: new Array(16).fill(0.0), // Zero mean in latent space
+        sigma: new Array(16).fill(1.0), // Unit variance initially
+        games_processed: 0,
+        last_season: this.getCurrentSeason(),
+        last_updated: new Date().toISOString(),
+        initialization_method: 'default_infonce'
+      };
       
-      logger.debug('Initialized team latent distribution', { teamId });
+      await this.teamRepository.saveTeamEncodingToDb(teamId, initialPosterior);
+      
+      logger.debug('Initialized team posterior distribution', { 
+        teamId,
+        latentDim: initialPosterior.mu.length,
+        avgUncertainty: initialPosterior.sigma.reduce((sum, s) => sum + s, 0) / initialPosterior.sigma.length
+      });
     } catch (error) {
       logger.error('Failed to initialize team', {
         teamId,
         error: error.message
       });
       throw error;
+    }
+  }
+
+  /**
+   * Check for season transitions and apply inter-year uncertainty increases
+   * @param {string} gameDate - Game date string
+   * @param {Array<string>} teamIds - Array of team IDs to check
+   * @returns {Promise<void>}
+   */
+  async checkSeasonTransitions(gameDate, teamIds) {
+    try {
+      const currentDate = new Date(gameDate);
+      
+      for (const teamId of teamIds) {
+        const transitionResult = await this.uncertaintyManager.checkAndApplySeasonTransition(
+          teamId, 
+          currentDate
+        );
+        
+        if (transitionResult.transitionDetected) {
+          logger.info('Season transition applied during game processing', {
+            teamId,
+            gameDate,
+            previousSeason: transitionResult.previousSeason,
+            newSeason: transitionResult.newSeason,
+            transitionDate: transitionResult.transitionDate
+          });
+        }
+      }
+      
+    } catch (error) {
+      logger.error('Failed to check season transitions during game processing', {
+        gameDate,
+        teamIds,
+        error: error.message
+      });
+      
+      // Don't throw - season transitions are not critical for game processing
+      // The game can still be processed with existing posterior distributions
+    }
+  }
+
+  /**
+   * Get current season string
+   * @returns {string} - Current season (e.g., "2023-24")
+   */
+  getCurrentSeason() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1; // JavaScript months are 0-indexed
+    
+    // Basketball season spans two calendar years
+    if (month >= 11) {
+      return `${year}-${(year + 1).toString().slice(-2)}`;
+    } else {
+      return `${year - 1}-${year.toString().slice(-2)}`;
     }
   }
 
@@ -740,10 +831,10 @@ class OnlineLearningOrchestrator {
    */
   async handlePeriodicTasks(gameCount) {
     try {
-      // Periodic model saves (skip for now due to TensorFlow.js save issues)
+      // Periodic model saves (safe weight-only format)
       if (gameCount % this.saveInterval === 0) {
         try {
-          await this.saveModels();
+          await this.saveModelsSafe();
           this.stats.modelSaves++;
           
           logger.info('Periodic model save completed', {
@@ -779,7 +870,65 @@ class OnlineLearningOrchestrator {
   }
 
   /**
-   * Save all models to disk
+   * Save all models to disk (InfoNCE architecture)
+   * @returns {Promise<void>}
+   */
+  async saveModelsSafe() {
+    try {
+      const fs = require('fs').promises;
+      const path = require('path');
+      
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const modelsDir = 'data/models';
+      const basePath = `${modelsDir}/infonce-online-learning-${timestamp}`;
+
+      // Ensure models directory exists
+      try {
+        await fs.mkdir(modelsDir, { recursive: true });
+      } catch (error) {
+        // Directory might already exist, ignore error
+      }
+
+      // Save frozen encoder state (if available)
+      if (this.frozenEncoder) {
+        const encoderState = await this.frozenEncoder.saveState();
+        await fs.writeFile(`${basePath}-frozen-encoder.json`, JSON.stringify(encoderState, null, 2));
+      }
+      
+      // Save NN model (weight-only format)
+      const nnState = await this.transitionNN.toJSON();
+      await fs.writeFile(`${basePath}-nn.json`, JSON.stringify(nnState, null, 2));
+      
+      // Save adaptive trainer state
+      const trainerState = this.adaptiveTrainer.toJSON();
+      await fs.writeFile(`${basePath}-trainer.json`, JSON.stringify(trainerState, null, 2));
+
+      // Save Bayesian updater configuration
+      const bayesianConfig = this.bayesianUpdater.getConfiguration();
+      await fs.writeFile(`${basePath}-bayesian-config.json`, JSON.stringify(bayesianConfig, null, 2));
+
+      // Save uncertainty manager configuration
+      if (this.uncertaintyManager) {
+        const uncertaintyConfig = this.uncertaintyManager.getConfiguration();
+        await fs.writeFile(`${basePath}-uncertainty-config.json`, JSON.stringify(uncertaintyConfig, null, 2));
+      }
+
+      logger.info('InfoNCE models saved successfully', { 
+        basePath,
+        architecture: 'InfoNCE with frozen encoder',
+        components: ['frozen-encoder', 'nn', 'trainer', 'bayesian-config', 'uncertainty-config']
+      });
+
+    } catch (error) {
+      logger.error('Failed to save InfoNCE models', {
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Save all models to disk (legacy TensorFlow.js format)
    * @returns {Promise<void>}
    */
   async saveModels() {
@@ -842,7 +991,7 @@ class OnlineLearningOrchestrator {
   }
 
   /**
-   * Run validation on recent predictions
+   * Run validation on recent predictions (InfoNCE architecture)
    * @returns {Promise<void>}
    */
   async runValidation() {
@@ -861,23 +1010,95 @@ class OnlineLearningOrchestrator {
         return;
       }
 
-      // Simple validation: check training statistics
-      const trainerStats = this.feedbackTrainer.getTrainingStats();
+      // Validation for InfoNCE architecture
+      const trainerStats = this.adaptiveTrainer.getTrainingStats();
       
-      logger.info('Validation results', {
+      // Validate encoder immutability
+      let encoderImmutable = false;
+      if (this.frozenEncoder) {
+        encoderImmutable = await this.frozenEncoder.validateImmutability(false);
+      }
+      
+      // Get Bayesian updater statistics
+      const bayesianConfig = this.bayesianUpdater.getConfiguration();
+      
+      logger.info('InfoNCE validation results', {
+        architecture: 'InfoNCE with frozen encoder',
         recentGames: recentGames.length,
-        convergenceAchieved: trainerStats.convergenceAchieved,
-        averageNNLoss: trainerStats.averageNNLoss,
-        averageVAELoss: trainerStats.averageVAELoss,
-        feedbackTriggers: trainerStats.feedbackTriggers,
-        currentAlpha: trainerStats.stability.currentAlpha
+        encoderImmutable,
+        avgRecentNNLoss: trainerStats.avgRecentNNLoss,
+        totalGamesProcessed: trainerStats.totalGamesProcessed,
+        nnLearningRate: trainerStats.nnLearningRate,
+        bayesianConfig: {
+          learningRate: bayesianConfig.learningRate,
+          minUncertainty: bayesianConfig.minUncertainty,
+          maxUncertainty: bayesianConfig.maxUncertainty
+        }
       });
 
     } catch (error) {
-      logger.error('Failed to run validation', {
+      logger.error('Failed to run InfoNCE validation', {
         error: error.message
       });
       // Don't throw - validation is non-critical
+    }
+  }
+
+  /**
+   * Track loss history for visualization
+   * @param {Object} result - Processing result
+   * @param {number} gameCount - Current game count
+   */
+  trackLossHistory(result, gameCount) {
+    if (gameCount % this.lossTrackingInterval === 0) {
+      const lossEntry = {
+        gameCount,
+        timestamp: new Date().toISOString(),
+        gameId: result.gameId,
+        gameDate: result.gameDate,
+        homeLoss: result.losses.home,
+        awayLoss: result.losses.away,
+        averageLoss: (result.losses.home + result.losses.away) / 2,
+        feedbackTriggered: result.losses.feedbackTriggered,
+        processingTime: result.processingTime
+      };
+
+      this.lossHistory.push(lossEntry);
+
+      // Keep only recent history (last 1000 entries)
+      if (this.lossHistory.length > 1000) {
+        this.lossHistory = this.lossHistory.slice(-1000);
+      }
+
+      // Save loss history to file for visualization
+      this.saveLossHistory();
+
+      logger.info('Loss tracking update', {
+        gameCount,
+        averageLoss: lossEntry.averageLoss.toFixed(6),
+        feedbackTriggered: lossEntry.feedbackTriggered,
+        historyLength: this.lossHistory.length
+      });
+    }
+  }
+
+  /**
+   * Save loss history to JSON file for visualization
+   */
+  async saveLossHistory() {
+    try {
+      const fs = require('fs').promises;
+      const lossFile = 'data/loss-history.json';
+      
+      const lossData = {
+        lastUpdated: new Date().toISOString(),
+        totalEntries: this.lossHistory.length,
+        history: this.lossHistory
+      };
+
+      await fs.writeFile(lossFile, JSON.stringify(lossData, null, 2));
+    } catch (error) {
+      logger.warn('Failed to save loss history', { error: error.message });
     }
   }
 

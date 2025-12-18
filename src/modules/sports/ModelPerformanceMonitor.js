@@ -211,21 +211,19 @@ class ModelPerformanceMonitor {
       let convergedCount = 0;
       
       for (const team of teams) {
-        if (team.statistical_representation) {
-          try {
-            const distribution = JSON.parse(team.statistical_representation);
-            if (distribution.sigma) {
-              const averageSigma = this.calculateAverageSigma(distribution.sigma);
-              if (averageSigma < this.convergenceThreshold) {
-                convergedCount++;
-              }
+        try {
+          const posterior = await this.teamRepository.getTeamEncodingFromDb(team.team_id);
+          if (posterior && posterior.sigma) {
+            const averageSigma = this.calculateAverageSigma(posterior.sigma);
+            if (averageSigma < this.convergenceThreshold) {
+              convergedCount++;
             }
-          } catch (error) {
-            logger.warn('Failed to parse team distribution', {
-              teamId: team.team_id,
-              error: error.message
-            });
           }
+        } catch (error) {
+          logger.warn('Failed to get team posterior distribution', {
+            teamId: team.team_id,
+            error: error.message
+          });
         }
       }
       
@@ -514,27 +512,34 @@ class ModelPerformanceMonitor {
       const teamDetails = [];
 
       for (const team of teams) {
-        if (team.statistical_representation) {
-          try {
-            const distribution = JSON.parse(team.statistical_representation);
-            const averageSigma = this.calculateAverageSigma(distribution.sigma || []);
+        try {
+          const posterior = await this.teamRepository.getTeamEncodingFromDb(team.team_id);
+          if (posterior) {
+            const averageSigma = this.calculateAverageSigma(posterior.sigma || []);
             
             teamDetails.push({
               teamId: team.team_id,
               teamName: team.team_name,
               averageSigma,
               isConverged: averageSigma < this.convergenceThreshold,
-              gamesProcessed: distribution.gamesProcessed || 0,
+              gamesProcessed: posterior.games_processed || 0,
               uncertaintyLevel: this.categorizeUncertaintyLevel(averageSigma),
-              lastSeason: distribution.lastSeason
+              lastSeason: posterior.last_season,
+              modelVersion: posterior.model_version
             });
-          } catch (error) {
+          } else {
             teamDetails.push({
               teamId: team.team_id,
               teamName: team.team_name,
-              error: 'Invalid distribution data'
+              error: 'No posterior distribution available'
             });
           }
+        } catch (error) {
+          teamDetails.push({
+            teamId: team.team_id,
+            teamName: team.team_name,
+            error: 'Failed to load posterior distribution'
+          });
         }
       }
 

@@ -77,31 +77,49 @@ Historical DB → Team Stats → MCMC Sim → EV Calc → Recommendation
 
 ### VAE-Neural Network Prediction Engine
 
-**Three-Component Architecture:**
+**Three-Phase Architecture:**
+
+**Phase 1: InfoNCE Pretraining (One-Time)**
 
 1. **Team Encoding VAE (Variational Autoencoder)**
    - **Input**: Normalized game features (80 dimensions): shooting stats, rebounding, assists, turnovers, advanced metrics, player-level data, lineup combinations
    - **Encoder**: Maps game features → latent team distribution N(μ, σ²) with 16 dimensions
    - **Decoder**: Reconstructs game features from latent vector for training
-   - **Loss**: Reconstruction loss + KL divergence + α * NN_feedback_loss
-   - **Output**: 16-dimensional latent team representations with uncertainty estimates
+   - **Loss**: Reconstruction loss + KL divergence + λ * InfoNCE(z, g(y))
+   - **InfoNCE Objective**: Maximizes mutual information between latent z and transition probability labels without forcing reconstruction
+   - **Output**: 16-dimensional latent team representations that are predictive of transition probabilities
+   - **Status**: Frozen after pretraining to preserve InfoNCE structure
 
-2. **Transition Probability Neural Network**
-   - **Input**: [team_A_μ[16], team_A_σ[16], team_B_μ[16], team_B_σ[16], game_context[~10]]
+**Phase 2: Game-by-Game Processing**
+
+2. **Posterior Latent Management**
+   - **Storage**: Team posterior distributions N(μ, σ²) stored in database per team per game date
+   - **Retrieval**: Load current posterior latent (prior) for each team before game processing
+   - **Evolution**: Posterior distributions evolve via Bayesian updates, not gradient descent
+
+3. **Transition Probability Neural Network**
+   - **Input**: [team_A_posterior_μ[16], team_A_posterior_σ[16], team_B_posterior_μ[16], team_B_posterior_σ[16], game_context[~10]]
    - **Architecture**: MLP with hidden layers (128, 64, 32)
    - **Output**: 8 transition probabilities (2pt make/miss, 3pt make/miss, FT make/miss, oreb, turnover)
-   - **Training**: Cross-entropy loss vs actual observed transition frequencies
+   - **Training**: Cross-entropy loss vs actual observed transition frequencies (NN weights only)
 
-3. **MCMC Game Simulation**
+4. **Bayesian Posterior Updates**
+   - **Observation**: Treat game outcomes as observations for Bayesian inference
+   - **Update Rule**: p(z|games) ∝ p(y|z,opponent,context) p(z)
+   - **Prior**: Current posterior distribution from database
+   - **Likelihood**: Derived from game outcome via trained NN model
+   - **Result**: Updated posterior mean/variance (no encoder weight changes)
+
+5. **MCMC Game Simulation**
    - Runs 10,000+ Monte Carlo iterations using NN-predicted transition probabilities
    - Simulates possession-by-possession gameplay
    - Generates win probabilities and score distributions for betting analysis
 
-**Key Innovation - VAE-NN Feedback Loop:**
-- When NN cross-entropy loss > threshold: backpropagate NN loss through VAE encoder
-- VAE learns to encode teams in ways that improve transition probability predictions
-- Feedback coefficient α decays over time as system stabilizes
-- Creates self-improving team representations
+**Key Innovation - Stable Architecture:**
+- **Encoder Frozen**: Preserves discriminative InfoNCE structure permanently
+- **Bayesian Updates**: Team representations evolve via posterior inference, not backpropagation
+- **Clean Separation**: VAE learns intrinsic team properties, NN learns team interactions
+- **No Mode Collapse**: Eliminates competing objectives that caused training instability
 
 **Supporting Components:**
 
@@ -138,43 +156,62 @@ Historical DB → Team Stats → MCMC Sim → EV Calc → Recommendation
    - Identifies +EV opportunities (5%+ edge)
    - Accounts for betting market efficiency
 
-**Training Pipeline:**
+**Pretraining Pipeline (One-Time):**
 
 ```
-1. Load all teams from teams table (random initialization of latent distributions)
-2. Query game_ids table for unprocessed games, ordered chronologically
+1. Load all teams from teams table
+2. Query game_ids table for historical games, ordered chronologically
 3. For each game:
-   a. Check for season transition - if new season, increase σ² by inter-year variance
-   b. Fetch XML from StatBroadcast archive
-   c. Extract normalized game features (80-dim)
-   d. Encode teams using VAE → latent distributions N(μ, σ²)
-   e. Compute actual transition probabilities from play-by-play
-   f. Train NN: predict transitions from team latents + context
-   g. If NN loss > threshold: backprop through VAE (α * NN_loss)
-   h. Bayesian update of team latent distributions (season-aware weighting)
-   i. Mark game as processed
-4. Store trained VAE weights, NN weights, and team distributions
+   a. Fetch XML from StatBroadcast archive
+   b. Extract normalized game features (80-dim)
+   c. Compute actual transition probabilities from play-by-play
+4. Train VAE with InfoNCE:
+   a. Reconstruction loss: ||x - decoder(encoder(x))||²
+   b. KL divergence: KL(q(z|x) || p(z))
+   c. InfoNCE loss: -log(exp(sim(z, g(y))) / Σ exp(sim(z, g(y'))))
+   d. Total loss: reconstruction + β*KL + λ*InfoNCE
+5. Freeze encoder weights permanently
+6. Store frozen VAE weights and initial team posterior distributions
 ```
 
-**Online Learning Pipeline:**
+**Game-by-Game Processing Pipeline:**
+
+```
+1. Retrieve current posterior latent distributions for both teams from database
+2. Extract game features from current game data
+3. VAE forward pass (frozen encoder, no gradients):
+   a. z_team = vae.encode(game_features)  # for logging/inspection only
+4. NN forward pass and training:
+   a. Build input: [team_A_posterior, team_B_posterior, game_context]
+   b. Predict: predicted_trans_probs = nn.forward(nn_input)
+   c. Compute loss: nn_loss = cross_entropy(predicted, actual)
+   d. Backprop: nn.backward(nn_loss)  # NN weights only
+5. Bayesian posterior update:
+   a. Prior: current posterior distributions from database
+   b. Likelihood: p(y|z,opponent,context) from NN model
+   c. Posterior: p(z|games) ∝ likelihood * prior
+   d. Compute new posterior mean/variance (no encoder backprop)
+6. Store updated posterior latents in database
+```
+
+**Prediction Pipeline:**
 
 ```
 1. Fetch today's games from ESPN API
-2. Load team latent distributions N(μ, σ²) from teams table
+2. Load team posterior latent distributions N(μ, σ²) from teams table
 3. Check for season transitions and apply inter-year variance increases if needed
 4. For each game:
-   a. Sample from team distributions or use mean vectors
-   b. Build game representation (team_A + team_B + context)
-   c. Generate transition probabilities with NN
+   a. Use posterior latent means (or samples) from both teams
+   b. Build game representation (team_A_posterior + team_B_posterior + context)
+   c. Generate transition probabilities with NN (frozen VAE space)
    d. Run MCMC simulation (10k iterations)
    e. Calculate EV for all betting markets
-   f. Generate recommendation with confidence (higher uncertainty for new season)
+   f. Generate recommendation with confidence
 5. After game completion:
    a. Fetch actual game XML
    b. Update NN weights based on prediction error
-   c. Update VAE if NN performance poor (decaying α)
-   d. Bayesian update of team distributions (season-aware weighting)
-   e. Store updated models and team representations
+   c. Bayesian update of team posterior distributions
+   d. Store updated NN weights and team posteriors
 ```
 
 ## Database Schema
@@ -188,9 +225,10 @@ CREATE TABLE teams (
     sport TEXT NOT NULL DEFAULT 'mens-college-basketball',
     conference TEXT,                        -- Conference affiliation
     
-    -- VAE latent team representation (JSON blob)
-    -- Contains: {"mu": [16-dim array], "sigma": [16-dim array], "games_processed": int, "last_season": "2023-24"}
-    -- Represents team as N(μ, σ²) distribution in 16-dimensional latent space
+    -- VAE posterior latent team representation (JSON blob)
+    -- Contains: {"mu": [16-dim array], "sigma": [16-dim array], "games_processed": int, "last_season": "2023-24", "last_updated": "2024-01-15"}
+    -- Represents team as posterior N(μ, σ²) distribution in frozen InfoNCE latent space
+    -- Updated via Bayesian inference, not gradient descent
     -- Inter-year uncertainty: σ² increases at season start to account for roster/coaching changes
     statistical_representation TEXT,
     
@@ -213,18 +251,47 @@ CREATE TABLE game_ids (
     away_team_id TEXT,                     -- FK to teams.team_id
     game_date DATE NOT NULL,
     processed BOOLEAN NOT NULL DEFAULT 0,  -- Whether game has been used for training
+    
+    -- InfoNCE training labels: transition probability vectors for contrastive learning
+    transition_probabilities_home BLOB,    -- Home team's 8-dim transition vector [2pt_make, 2pt_miss, 3pt_make, 3pt_miss, ft_make, ft_miss, oreb, turnover]
+    transition_probabilities_away BLOB,    -- Away team's 8-dim transition vector
+    labels_extracted BOOLEAN NOT NULL DEFAULT 0, -- Whether transition probabilities have been computed
+    
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (home_team_id) REFERENCES teams(team_id),
     FOREIGN KEY (away_team_id) REFERENCES teams(team_id)
+);
+
+-- Indexes for efficient InfoNCE negative sampling
+CREATE INDEX idx_game_ids_labels_extracted ON game_ids(labels_extracted);
+CREATE INDEX idx_game_ids_home_team ON game_ids(home_team_id);
+CREATE INDEX idx_game_ids_away_team ON game_ids(away_team_id);
+```
+
+### VAE Model Weights Table
+```sql
+CREATE TABLE vae_model_weights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_version TEXT NOT NULL,           -- Version identifier (e.g., "v1.0-infonce")
+    encoder_weights BLOB NOT NULL,         -- Frozen encoder weights after InfoNCE pretraining
+    decoder_weights BLOB,                  -- Decoder weights (optional, for validation)
+    latent_dim INTEGER NOT NULL DEFAULT 16, -- Latent space dimensionality
+    input_dim INTEGER NOT NULL DEFAULT 80,  -- Input feature dimensionality
+    training_completed BOOLEAN NOT NULL DEFAULT 0, -- Whether InfoNCE pretraining is complete
+    frozen BOOLEAN NOT NULL DEFAULT 0,     -- Whether encoder is frozen
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
 **Key Points:**
 - `team_id` is used to fetch today's games from ESPN API
 - `statbroadcast_gid` is used to fetch historical game IDs from schedule endpoint
-- `statistical_representation` stores VAE latent distribution N(μ, σ²) as JSON
+- `statistical_representation` stores VAE posterior latent distribution N(μ, σ²) as JSON
 - `game_ids.processed` tracks which games have been used for online learning
+- `transition_probabilities_home/away` store 8-dimensional vectors for InfoNCE negative sampling
+- `vae_model_weights` stores frozen encoder weights after InfoNCE pretraining
 - No historical_games table needed - games are processed on-the-fly from StatBroadcast
 
 ### Model Predictions (for validation only)
@@ -259,9 +326,9 @@ CREATE TABLE model_predictions (
 *For any* completed game, storing the result should allow retrieval of the same game data including scores and betting outcomes.
 **Validates: Requirements 10.1, 10.2, 10.3**
 
-### Property 2: Bayesian update convergence
-*For any* team with multiple game results, the posterior distribution standard deviation should decrease as more games are observed.
-**Validates: Requirements 11.2, 11.4**
+### Property 2: Bayesian posterior convergence
+*For any* team with multiple game results, the posterior distribution standard deviation should decrease as more games are observed while the encoder remains frozen.
+**Validates: Requirements 11.11, 11.12**
 
 ### Property 3: Opponent adjustment consistency
 *For any* set of teams, running the opponent-adjustment algorithm should converge to stable ratings within 100 iterations.
@@ -287,9 +354,9 @@ CREATE TABLE model_predictions (
 *For any* game with play-by-play data, the sum of all scoring events should equal the final score for both teams.
 **Validates: Requirements 13.4, 17.5**
 
-### Property 9: Real-time Bayesian updates
-*For any* team with play-by-play data, the posterior distribution after processing all possessions should have lower variance than the prior.
-**Validates: Requirements 13.9, 11.4**
+### Property 9: InfoNCE structure preservation
+*For any* team encoding after Bayesian updates, the latent representation should remain in the same InfoNCE-structured space as the frozen encoder output.
+**Validates: Requirements 11.3, 11.11**
 
 ### Property 10: XML parsing completeness
 *For any* valid StatBroadcast XML game file, parsing should extract all required fields (metadata, team stats, play-by-play) without errors.
@@ -317,7 +384,15 @@ CREATE TABLE model_predictions (
 
 ### Property 16: Inter-year uncertainty increase
 *For any* team transitioning from one season to the next, the posterior distribution standard deviation should increase by the configured inter-year variance amount.
-**Validates: Requirements 11.11, 11.12**
+**Validates: Requirements 11.13, 11.14**
+
+### Property 17: InfoNCE pretraining round trip
+*For any* valid team feature vector, encoding then decoding through the VAE should reconstruct features within acceptable tolerance while maintaining InfoNCE structure.
+**Validates: Requirements 11.2, 11.3**
+
+### Property 18: Encoder weight immutability
+*For any* game processing after pretraining, the VAE encoder weights should remain unchanged regardless of NN training outcomes.
+**Validates: Requirements 11.3, 11.10**
 
 ## Testing Strategy
 

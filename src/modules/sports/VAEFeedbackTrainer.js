@@ -15,7 +15,7 @@ class VAEFeedbackTrainer {
     this.transitionNN = transitionNN;
     
     // Feedback loop parameters
-    this.feedbackThreshold = options.feedbackThreshold || 0.5; // NN loss threshold for VAE feedback
+    this.feedbackThreshold = options.feedbackThreshold || 0.4; // NN loss threshold for VAE feedback (lowered from 0.5)
     this.initialAlpha = options.initialAlpha || 0.1; // Initial feedback coefficient
     this.alphaDecayRate = options.alphaDecayRate || 0.99; // Decay rate for feedback coefficient
     this.minAlpha = options.minAlpha || 0.001; // Minimum feedback coefficient
@@ -102,7 +102,7 @@ class VAEFeedbackTrainer {
       // Step 3: Compute NN cross-entropy loss
       const nnLoss = this.transitionNN.computeLoss(predictedProbs, actualTransitionProbs);
 
-      // Step 4: Train NN on current prediction
+      // Step 4: Train NN on current prediction (always - NN needs to warm up first)
       const nnInput = this.transitionNN.buildInputVector(
         teamRepresentations.teamA_mu,
         teamRepresentations.teamA_sigma,
@@ -111,13 +111,33 @@ class VAEFeedbackTrainer {
         gameContext
       );
       
-      await this.transitionNN.trainStep(nnInput, actualTransitionProbs);
+      // Use reduced learning rate for individual training to work with mini-batching
+      await this.transitionNN.trainStep(nnInput, actualTransitionProbs, this.transitionNN.learningRate * 0.1);
+      
+      // Increment NN training step
+      this.transitionNN.trainingStep++;
 
-      // Step 5: Check if feedback is needed
+      // Step 5: Check if feedback is needed (only after warmup)
       let vaeLoss = 0;
       let feedbackTriggered = false;
       
-      if (nnLoss > this.feedbackThreshold && this.currentAlpha > this.minAlpha) {
+      const isNNWarmupPhase = this.transitionNN.trainingStep < this.transitionNN.nnWarmupSteps;
+      
+      // Debug feedback conditions
+      if (this.iteration % 10 === 0) {
+        logger.debug('Feedback check', {
+          iteration: this.iteration,
+          trainingStep: this.transitionNN.trainingStep,
+          nnWarmupSteps: this.transitionNN.nnWarmupSteps,
+          isNNWarmupPhase,
+          nnLoss: nnLoss.toFixed(4),
+          threshold: this.feedbackThreshold,
+          currentAlpha: this.currentAlpha.toFixed(4),
+          minAlpha: this.minAlpha
+        });
+      }
+      
+      if (!isNNWarmupPhase && nnLoss > this.feedbackThreshold && this.currentAlpha > this.minAlpha) {
         // Trigger VAE feedback training
         feedbackTriggered = true;
         this.stats.feedbackTriggers++;

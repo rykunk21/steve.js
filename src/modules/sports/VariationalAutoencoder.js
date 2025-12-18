@@ -19,9 +19,11 @@ class VariationalAutoencoder {
     
     // Training parameters
     this.learningRate = 0.001;
-    this.betaKL = 1.0; // KL divergence weight
+    this.betaKL = 3.0; // β-VAE: Strong KL weight to prevent collapse (β=2-5)
+    this.betaKLSchedule = { min: 0.1, max: 3.0, warmupSteps: 50 }; // KL annealing (shorter for testing)
     this.alphaFeedback = 0.1; // Initial feedback coefficient (decays over time)
     this.feedbackDecayRate = 0.99; // Decay rate for feedback coefficient
+    this.trainingStep = 0;
     
     // TensorFlow.js models
     this.encoder = null;
@@ -151,7 +153,7 @@ class VariationalAutoencoder {
   }
 
   /**
-   * Compute VAE loss components using TensorFlow.js
+   * Compute VAE loss components using TensorFlow.js with β-VAE and KL annealing
    * @param {tf.Tensor} input - Original input
    * @param {tf.Tensor} reconstruction - Reconstructed input
    * @param {tf.Tensor} mu - Latent mean
@@ -172,11 +174,16 @@ class VariationalAutoencoder {
         )
       ));
       
-      // Total VAE loss
-      const vaeLoss = tf.add(reconstructionLoss, tf.mul(this.betaKL, klLoss));
+      // β-VAE with KL annealing to prevent collapse
+      const currentBeta = this.getCurrentBetaKL();
       
-      // Add feedback loss if provided
-      const totalLoss = tf.add(vaeLoss, tf.mul(this.alphaFeedback, nnFeedbackLoss));
+      // Total VAE loss with β-VAE
+      const vaeLoss = tf.add(reconstructionLoss, tf.mul(currentBeta, klLoss));
+      
+      // Add feedback loss if provided (only after VAE warmup AND NN warmup)
+      const vaeWarmedUp = this.trainingStep > this.betaKLSchedule.warmupSteps;
+      const feedbackWeight = vaeWarmedUp ? this.alphaFeedback : 0;
+      const totalLoss = tf.add(vaeLoss, tf.mul(feedbackWeight, nnFeedbackLoss));
       
       return {
         totalLoss,
@@ -184,9 +191,24 @@ class VariationalAutoencoder {
         klLoss,
         vaeLoss,
         nnFeedbackLoss,
-        alpha: this.alphaFeedback
+        alpha: feedbackWeight,
+        beta: currentBeta
       };
     });
+  }
+
+  /**
+   * Get current β value for KL annealing
+   * @returns {number} - Current β value
+   */
+  getCurrentBetaKL() {
+    const { min, max, warmupSteps } = this.betaKLSchedule;
+    if (this.trainingStep < warmupSteps) {
+      // Linear annealing from min to max
+      const progress = this.trainingStep / warmupSteps;
+      return min + (max - min) * progress;
+    }
+    return max;
   }
 
   /**
@@ -221,8 +243,12 @@ class VariationalAutoencoder {
         klLoss: lossInfo.klLoss.dataSync()[0],
         vaeLoss: lossInfo.vaeLoss.dataSync()[0],
         nnFeedbackLoss,
-        alpha: this.alphaFeedback
+        alpha: lossInfo.alpha,
+        beta: lossInfo.beta
       };
+
+      // Increment training step for annealing
+      this.trainingStep++;
       
       // Clean up
       Object.values(grads).forEach(grad => grad.dispose());
@@ -255,18 +281,33 @@ class VariationalAutoencoder {
 
 
   /**
-   * Encode game features to team latent distribution
+   * Encode game features to team latent distribution with noise injection
    * @param {Array} gameFeatures - Normalized game features
+   * @param {boolean} addNoise - Whether to add Gaussian noise (default: true)
    * @returns {Object} - {mu: Array, sigma: Array}
    */
-  encodeGameToTeamDistribution(gameFeatures) {
+  encodeGameToTeamDistribution(gameFeatures, addNoise = true) {
     const inputTensor = tf.tensor2d([gameFeatures], [1, this.inputDim]);
     
     try {
       const { mu, logVar } = this.encode(inputTensor);
       
-      const muArray = Array.from(mu.dataSync());
-      const sigmaArray = Array.from(logVar.dataSync()).map(lv => Math.exp(0.5 * lv));
+      let muArray = Array.from(mu.dataSync());
+      let sigmaArray = Array.from(logVar.dataSync()).map(lv => Math.exp(0.5 * lv));
+      
+      // Add Gaussian noise to prevent deterministic collapse
+      if (addNoise) {
+        const noiseScale = 0.1;
+        muArray = muArray.map(m => m + (Math.random() - 0.5) * 2 * noiseScale);
+        
+        // Apply latent dropout (randomly zero out 10% of dimensions)
+        const dropoutRate = 0.1;
+        for (let i = 0; i < muArray.length; i++) {
+          if (Math.random() < dropoutRate) {
+            muArray[i] = 0;
+          }
+        }
+      }
       
       mu.dispose();
       logVar.dispose();
@@ -356,6 +397,11 @@ class VariationalAutoencoder {
       data: Array.from(tensor.dataSync())
     }));
 
+    // DO NOT dispose of weight tensors here - they are still owned by the model
+    // The model will manage their lifecycle
+    // encoderWeights.forEach(tensor => tensor.dispose());
+    // decoderWeights.forEach(tensor => tensor.dispose());
+
     return {
       inputDim: this.inputDim,
       latentDim: this.latentDim,
@@ -443,6 +489,9 @@ class VariationalAutoencoder {
     if (this.decoder) {
       this.decoder.dispose();
       this.decoder = null;
+    }
+    if (this.optimizer) {
+      this.optimizer = null; // Optimizer doesn't need explicit disposal
     }
     logger.debug('Disposed VAE resources');
   }

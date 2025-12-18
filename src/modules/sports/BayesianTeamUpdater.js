@@ -725,22 +725,29 @@ class BayesianTeamUpdater {
         return { transitionDetected: false };
       }
 
-      const result = await this.uncertaintyManager.checkAndApplySeasonTransition(teamId, gameDate);
+      // Ensure gameDate is a Date object
+      const dateObj = gameDate instanceof Date ? gameDate : new Date(gameDate);
+
+      const result = await this.uncertaintyManager.checkAndApplySeasonTransition(teamId, dateObj);
       
       if (result.transitionDetected) {
         logger.info('Season transition applied during Bayesian update', {
           teamId,
           previousSeason: result.previousSeason,
           newSeason: result.newSeason,
-          gameDate: gameDate.toISOString()
+          gameDate: dateObj.toISOString()
         });
       }
 
       return result;
     } catch (error) {
+      // Safely handle gameDate for logging
+      const dateStr = gameDate instanceof Date ? gameDate.toISOString() : 
+                     (typeof gameDate === 'string' ? gameDate : String(gameDate));
+      
       logger.error('Failed to check season transition during Bayesian update', {
         teamId,
-        gameDate: gameDate.toISOString(),
+        gameDate: dateStr,
         error: error.message
       });
       // Don't throw - continue with update even if season transition fails

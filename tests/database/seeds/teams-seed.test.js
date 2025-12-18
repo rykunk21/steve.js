@@ -14,12 +14,12 @@ describe('Teams Seed Data', () => {
     const fs = require('fs').promises;
     const path = require('path');
     
-    const migration010 = await fs.readFile(
-      path.join(__dirname, '../../../src/database/migrations/010_create_teams_table.sql'),
+    const migration003 = await fs.readFile(
+      path.join(__dirname, '../../../src/database/migrations/003_create_teams_and_games.sql'),
       'utf-8'
     );
     
-    const statements = migration010.split(';').filter(s => s.trim());
+    const statements = migration003.split(';').filter(s => s.trim());
     for (const statement of statements) {
       if (statement.trim()) {
         await dbConnection.run(statement);

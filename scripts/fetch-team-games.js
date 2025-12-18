@@ -64,7 +64,14 @@ async function scrapeTeamArchive(gid, season) {
     const htmlContent = await page.content();
     const fs = require('fs');
     const path = require('path');
-    const htmlPath = path.join(__dirname, '../temp/statbroadcast-schedule-' + gid + '.html');
+    const tempDir = path.join(__dirname, '../temp');
+    
+    // Create temp directory if it doesn't exist
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const htmlPath = path.join(tempDir, `statbroadcast-schedule-${gid}.html`);
     fs.writeFileSync(htmlPath, htmlContent);
     logger.info('Saved schedule HTML', { path: htmlPath });
     
@@ -97,7 +104,7 @@ async function scrapeTeamArchive(gid, season) {
               });
             }
           }
-        });
+        }
       });
       
       return results;

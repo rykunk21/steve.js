@@ -265,24 +265,26 @@ This feature involves creating a Discord bot that provides custom slash commands
 
 ### Requirement 11
 
-**User Story:** As a data scientist, I want a VAE-Neural Network system with feedback loops for team encoding and transition probability prediction, so that the model learns rich team representations and adapts continuously from observed game outcomes through online learning.
+**User Story:** As a data scientist, I want a stable VAE-Neural Network system with InfoNCE pretraining and Bayesian posterior updates for team encoding and transition probability prediction, so that the model learns rich team representations without mode collapse and adapts continuously from observed game outcomes.
 
 #### Acceptance Criteria
 
-1. WHEN the system initializes THEN the system SHALL load pre-trained VAE weights, NN weights, and team latent distributions from the database
-2. WHEN extracting team features THEN the system SHALL normalize game features (shooting stats, rebounding, assists, turnovers, advanced metrics, player-level data) to [0,1] range before VAE input
-3. WHEN encoding teams THEN the system SHALL use a Variational Autoencoder to map normalized game features (80-dim) to latent team distributions N(μ, σ²) with 16 dimensions
-4. WHEN building game representations THEN the system SHALL concatenate team A latent distribution (μ, σ), team B latent distribution (μ, σ), and game context features into input vector
-5. WHEN generating transition probabilities THEN the system SHALL use a neural network to map game representations to predicted transition probability matrices (8 outcomes)
-6. WHEN a game completes THEN the system SHALL compute actual transition probabilities from play-by-play data as ground truth targets
-7. WHEN updating the neural network THEN the system SHALL calculate cross-entropy loss between predicted and actual transition probabilities and perform gradient descent
-8. WHEN NN prediction loss exceeds threshold THEN the system SHALL backpropagate NN loss through VAE encoder using feedback coefficient α to improve team representations
-9. WHEN updating team representations THEN the system SHALL apply Bayesian updates to team latent distributions (μ, σ) based on observed game performance
-10. WHEN the system learns over time THEN the system SHALL decay feedback coefficient α to reduce VAE updates as NN performance stabilizes
-11. WHEN a new season begins THEN the system SHALL increase team uncertainty by adding inter-year variance to σ² values to account for roster changes, coaching changes, and reduced predictive value of historical performance
-12. WHEN calculating inter-year uncertainty increase THEN the system SHALL add a configurable variance increment (default 0.25) to each dimension's σ² at season start
-13. WHEN storing team data THEN the system SHALL persist updated latent distributions (μ, σ) in teams.statistical_representation field as JSON with season tracking
-14. WHEN displaying predictions THEN the system SHALL indicate data source (VAE-NN system vs fallback methods) and confidence levels
+1. WHEN the system initializes THEN the system SHALL load frozen VAE encoder weights, NN weights, and team posterior latent distributions from the database
+2. WHEN pretraining the VAE THEN the system SHALL train the encoder with reconstruction loss + KL divergence + λ * InfoNCE(z, g(y)) to create label-predictive latent representations
+3. WHEN pretraining completes THEN the system SHALL freeze the VAE encoder weights permanently to preserve InfoNCE structure
+4. WHEN extracting team features THEN the system SHALL normalize game features (shooting stats, rebounding, assists, turnovers, advanced metrics, player-level data) to [0,1] range before VAE input
+5. WHEN encoding teams THEN the system SHALL use the frozen VAE encoder to map normalized game features (80-dim) to latent team distributions N(μ, σ²) with 16 dimensions
+6. WHEN retrieving team representations THEN the system SHALL load current posterior latent distributions (mean and variance) from the database for each team
+7. WHEN building game representations THEN the system SHALL concatenate team A posterior latent (μ, σ), team B posterior latent (μ, σ), and game context features into input vector
+8. WHEN generating transition probabilities THEN the system SHALL use a neural network to map game representations to predicted transition probability matrices (8 outcomes)
+9. WHEN a game completes THEN the system SHALL compute actual transition probabilities from play-by-play data as ground truth targets
+10. WHEN updating the neural network THEN the system SHALL calculate cross-entropy loss between predicted and actual transition probabilities and perform gradient descent on NN weights only
+11. WHEN updating team representations THEN the system SHALL apply Bayesian posterior updates to team latent distributions (μ, σ) based on observed game performance without backpropagating through the frozen encoder
+12. WHEN performing Bayesian updates THEN the system SHALL treat game outcomes as observations and update posterior distributions using p(z|games) ∝ p(y|z,opponent,context) p(z)
+13. WHEN a new season begins THEN the system SHALL increase team uncertainty by adding inter-year variance to σ² values to account for roster changes, coaching changes, and reduced predictive value of historical performance
+14. WHEN calculating inter-year uncertainty increase THEN the system SHALL add a configurable variance increment (default 0.25) to each dimension's σ² at season start
+15. WHEN storing team data THEN the system SHALL persist updated posterior latent distributions (μ, σ) in teams.statistical_representation field as JSON with season tracking
+16. WHEN displaying predictions THEN the system SHALL indicate data source (VAE-NN system vs fallback methods) and confidence levels
 
 ### Requirement 12
 

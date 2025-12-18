@@ -1,99 +1,55 @@
 #!/usr/bin/env node
 
 /**
- * Seed NCAA Basketball Teams with StatBroadcast GIDs
- * Run with: node scripts/seed-teams.js
+ * Script to seed the teams table with StatBroadcast GIDs
  */
 
-const fs = require('fs');
-const path = require('path');
 const dbConnection = require('../src/database/connection');
-const TeamRepository = require('../src/database/repositories/TeamRepository');
 const logger = require('../src/utils/logger');
+
+// Sample teams for seeding - this would normally come from a data source
+const sampleTeams = [
+  { team_id: '150', statbroadcast_gid: 'duke', team_name: 'Duke Blue Devils', sport: 'mens-college-basketball', conference: 'ACC' },
+  { team_id: '153', statbroadcast_gid: 'unc', team_name: 'North Carolina Tar Heels', sport: 'mens-college-basketball', conference: 'ACC' },
+  { team_id: '120', statbroadcast_gid: 'uk', team_name: 'Kentucky Wildcats', sport: 'mens-college-basketball', conference: 'SEC' },
+  { team_id: '96', statbroadcast_gid: 'gonz', team_name: 'Gonzaga Bulldogs', sport: 'mens-college-basketball', conference: 'WCC' }
+];
 
 async function seedTeams() {
   try {
-    logger.info('Starting team seeding...');
-    
-    // Initialize database connection
     await dbConnection.initialize();
     
-    const teamRepository = new TeamRepository();
-    const { seedTeams } = require('../src/database/seeds/teams-seed');
+    logger.info('Seeding teams table...');
     
-    const result = await seedTeams(teamRepository);
+    for (const team of sampleTeams) {
+      try {
+        await dbConnection.run(
+          `INSERT OR REPLACE INTO teams (team_id, statbroadcast_gid, team_name, sport, conference) 
+           VALUES (?, ?, ?, ?, ?)`,
+          [team.team_id, team.statbroadcast_gid, team.team_name, team.sport, team.conference]
+        );
+        logger.info(`Seeded team: ${team.team_name}`);
+      } catch (error) {
+        logger.error(`Failed to seed team ${team.team_name}:`, error.message);
+      }
+    }
     
-    logger.info('Team seeding completed', result);
+    const teamCount = await dbConnection.get('SELECT COUNT(*) as count FROM teams');
+    logger.info(`Teams table seeded successfully. Total teams: ${teamCount.count}`);
     
-    // Seed teams from training dataset
-    await seedTeamsFromTrainingDataset(teamRepository);
-    
-    await dbConnection.close();
     process.exit(0);
   } catch (error) {
-    logger.error('Team seeding failed:', error);
+    logger.error('Failed to seed teams', {
+      error: error.message,
+      stack: error.stack
+    });
     process.exit(1);
   }
 }
 
-async function seedTeamsFromTrainingDataset(teamRepository) {
-  try {
-    logger.info('Seeding teams from training dataset...');
-    
-    const dataPath = path.join(__dirname, '../data/training-dataset.json');
-    const rawData = fs.readFileSync(dataPath, 'utf8');
-    const trainingData = JSON.parse(rawData);
-    
-    const teamsMap = new Map();
-    
-    // Extract unique teams from training dataset
-    for (const entry of trainingData.dataset) {
-      const { teams } = entry.gameData;
-      
-      if (teams?.home?.id) {
-        teamsMap.set(teams.home.id, {
-          teamId: teams.home.id,
-          teamName: teams.home.displayName || teams.home.name || teams.home.id,
-          sport: 'mens-college-basketball'
-        });
-      }
-      
-      if (teams?.visitor?.id) {
-        teamsMap.set(teams.visitor.id, {
-          teamId: teams.visitor.id,
-          teamName: teams.visitor.displayName || teams.visitor.name || teams.visitor.id,
-          sport: 'mens-college-basketball'
-        });
-      }
-    }
-    
-    logger.info(`Found ${teamsMap.size} unique teams in training dataset`);
-    
-    let created = 0;
-    let updated = 0;
-    
-    for (const team of teamsMap.values()) {
-      const existing = await teamRepository.getTeamByEspnId(team.teamId);
-      
-      if (!existing) {
-        await teamRepository.saveTeam(team);
-        created++;
-      } else {
-        updated++;
-      }
-    }
-    
-    logger.info('Training dataset teams seeded', { created, updated, total: teamsMap.size });
-    
-  } catch (error) {
-    logger.error('Failed to seed teams from training dataset', { error: error.message });
-    throw error;
-  }
-}
-
-// Run seeding if this file is executed directly
+// Run the script
 if (require.main === module) {
   seedTeams();
 }
 
-module.exports = seedTeams;
+module.exports = { seedTeams };
